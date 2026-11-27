@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>바코드 스캔</title>
+<!--
+  우리집 독서관리 앱의 바코드 스캔 화면.
+  구글 Apps Script 앱 안에서는 카메라가 막혀 있어서, 이 페이지를 새 창으로 열어 바코드를 읽고
+  읽은 ISBN만 앱으로 돌려준다. 아무 정보도 저장하거나 보내지 않는다.
+  앱 주소는 #app=… 로 받음 (주소 뒤 # 부분은 서버로 가지 않음).
+-->
+<style>
+html,body{margin:0;height:100%;background:#000;color:#fff;font:16px/1.4 -apple-system,"Noto Sans KR",sans-serif;overflow:hidden}
+video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover}
+.box{position:fixed;left:8%;right:8%;top:36%;height:24%;border:3px solid #6f6;border-radius:12px;box-shadow:0 0 0 2000px rgba(0,0,0,.35)}
+.bar{position:fixed;left:0;right:0;bottom:0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));display:flex;gap:10px;align-items:center;background:rgba(0,0,0,.65)}
+.bar div{flex:1}
+button{font:inherit;padding:12px 18px;border-radius:10px;border:0;background:#fff;color:#222}
+</style>
+</head>
+<body>
+<video id="v" playsinline muted autoplay></video>
+<div class="box"></div>
+<div class="bar"><div id="m">카메라 여는 중…</div><button id="x">닫기</button></div>
+<script>
+(function () {
+  'use strict';
+  var ZX = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+  var APP = '';
+  var mh = /[#&]app=([^&]+)/.exec(location.hash);
+  if (mh) { try { var u = decodeURIComponent(mh[1]); if (/^https:\/\/script\.google\.com\/macros\//.test(u)) APP = u; } catch (e) {} }
+  var v = document.getElementById('v'), m = document.getElementById('m'), done = false, stream = null;
+  function ok(s) {
+    s = String(s || '').replace(/[^0-9X]/g, '');
+    if (!/^97[89]\d{10}$/.test(s)) return '';
+    var t = 0; for (var j = 0; j < 12; j++) t += Number(s[j]) * (j % 2 ? 3 : 1);
+    return (10 - t % 10) % 10 === Number(s[12]) ? s : '';
+  }
+  function stop() { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+  function send(s) {
+    if (done) return; done = true;
+    try { if (navigator.vibrate) navigator.vibrate(80); } catch (e) {}
+    m.textContent = '읽었어요: ' + s; stop();
+    var back = false;
+    try { if (window.opener && !window.opener.closed) { window.opener.postMessage({ dkIsbn: s }, '*'); back = true; } } catch (e) {}
+    if (back) setTimeout(function () { window.close(); }, 250);
+    else if (APP) location.href = APP + '?isbn=' + s;
+    else m.textContent = '읽었어요: ' + s + ' — 앱으로 돌아가 이 숫자를 넣어 주세요';
+  }
+  document.getElementById('x').onclick = function () { stop(); window.close(); };
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { m.textContent = '이 브라우저에선 카메라를 못 써요. 크롬으로 열어 주세요.'; return; }
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }).then(function (st) {
+    stream = st; v.srcObject = st; return v.play();
+  }).then(function () {
+    m.textContent = '책 뒷면 바코드를 초록 상자에 맞춰 주세요';
+    if (!('BarcodeDetector' in window)) return null;
+    return BarcodeDetector.getSupportedFormats().then(function (f) { return f.indexOf('ean_13') >= 0 ? new BarcodeDetector({ formats: ['ean_13'] }) : null; }).catch(function () { return null; });
+  }).then(function (det) {
+    if (det) {
+      var loop = function () { if (done) return; det.detect(v).then(function (r) { for (var i = 0; i < r.length; i++) { var s = ok(r[i].rawValue); if (s) return send(s); } setTimeout(loop, 100); }).catch(function () { setTimeout(loop, 300); }); };
+      return loop();
+    }
+    var sc = document.createElement('script'); sc.src = ZX;
+    sc.onload = function () {
+      var Z = window.ZXing, c = document.createElement('canvas'), hints = new Map();
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13]); hints.set(Z.DecodeHintType.TRY_HARDER, true);
+      var rd = new Z.MultiFormatReader(); rd.setHints(hints);
+      var loop = function () {
+        if (done) return;
+        var w = v.videoWidth, h = v.videoHeight;
+        if (w) {
+          var cw = Math.round(w * 0.84), ch = Math.round(h * 0.3); c.width = cw; c.height = ch;
+          c.getContext('2d').drawImage(v, (w - cw) / 2, (h - ch) / 2, cw, ch, 0, 0, cw, ch);
+          try { var s = ok(rd.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(c)))).getText()); if (s) return send(s); } catch (e) {}
+        }
+        setTimeout(loop, 150);
+      };
+      loop();
+    };
+    sc.onerror = function () { m.textContent = '바코드 인식기를 못 불러왔어요. 닫고 \'사진으로 찍기\'를 써 주세요.'; };
+    document.head.appendChild(sc);
+  }).catch(function (e) {
+    m.textContent = '카메라를 못 열었어요 (' + ((e && e.name) || e) + '). 카메라 권한을 허용하거나, 닫고 \'사진으로 찍기\'를 써 주세요.';
+  });
+})();
+</script>
+</body>
+</html>
